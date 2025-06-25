@@ -2,6 +2,7 @@
 use std::{
     env::{current_dir, home_dir},
     ffi::OsStr,
+    fmt::Display,
     fs::{OpenOptions, create_dir, read_to_string, rename},
     hash::{DefaultHasher, Hash, Hasher},
     io::{Read, Write},
@@ -79,7 +80,7 @@ fn main() {
     match todo.cmd {
         Command::New(text) => {
             let pwd_todo_map_entry = dir_map_entries.iter().find(|(k, _v)| **k == *pwd);
-            match pwd_todo_map_entry {
+            let new_idx = match pwd_todo_map_entry {
                 Some((_path, index)) => {
                     // dir_map_entries.push((Some(pwd), Some(path_hash)));
                     // create file
@@ -121,9 +122,10 @@ fn main() {
                         0
                     };
 
-                    todo_file_handle
-                        .write_all(text.into_active_todo_record(next_idx).as_bytes())
-                        .expect("write new todo");
+                    text.io_write_as_active(&mut todo_file_handle, next_idx)
+                        .expect("write new todo to file");
+
+                    next_idx
                 }
 
                 _ => {
@@ -142,15 +144,16 @@ fn main() {
                     })
                     .expect("open todo");
 
-                    todo_file_handle
-                        .write_all(text.into_active_todo_record(0).as_bytes())
-                        .expect("write todo to file");
+                    text.io_write_as_active(&mut todo_file_handle, 0)
+                        .expect("write new todo to file");
 
                     write!(&mut dir_map_buf, "{pwd}\t{}\n", out_buf).unwrap();
                     save_dir_map(&mut todo_dir, &mut dir_map_buf)
                         .expect("write new entry to dir map");
+                    0
                 }
-            }
+            };
+            println!("added todo: \"{}\" at ID: {new_idx}", &text.text);
         }
         Command::List(all) if all.all => {}
         Command::List(_all) => {
@@ -279,11 +282,20 @@ struct NewTodo {
 }
 
 impl NewTodo {
-    pub fn into_active_todo_record(mut self, id: u64) -> Box<str> {
-        self.text.push(COL_SEP_CH);
-        self.text.push_str(ACTIVE_TODO);
-        self.text.push(LINE_SEP_CH);
-        format!("{id}{COL_SEP_CH}{}", self.text).into_boxed_str()
+    pub fn active_record_buff_size(&self) -> usize {
+        self.text.len() + 2 + 1 + ACTIVE_TODO.len() + 2
+    }
+
+    pub fn io_write_as_active(
+        &self,
+        buf: &mut impl std::io::Write,
+        id: u64,
+    ) -> std::io::Result<()> {
+        writeln!(
+            buf,
+            "{id}{COL_SEP_CH}{}{COL_SEP_CH}{ACTIVE_TODO}",
+            &self.text
+        )
     }
 }
 
