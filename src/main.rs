@@ -10,6 +10,8 @@ use std::{
 };
 
 use argh::FromArgs;
+use inquire::Confirm;
+use tinyvec::TinyVec;
 
 const TODO_DIR_NAME: &str = "todo";
 const DIR_MAP_NAME: &str = "dirmap.tsv";
@@ -77,7 +79,8 @@ fn main() {
             )
         })
         .collect();
-    match todo.cmd {
+    let cmd = todo.cmd.unwrap_or_default();
+    match cmd {
         Command::New(text) => {
             let pwd_todo_map_entry = dir_map_entries.iter().find(|(k, _v)| **k == *pwd);
             let new_id = match pwd_todo_map_entry {
@@ -255,7 +258,75 @@ fn main() {
             }
         }
         Command::Update(update_todo) => todo!(),
-        Command::Delete(delete_todo) => todo!(),
+        Command::Delete(delete_todo) => {
+            use std::fmt::Write as _;
+            let id_to_delete = delete_todo.id;
+            let pwd_todo_path = dir_map_entries.iter().find(|(k, _v)| **k == *pwd);
+            match pwd_todo_path {
+                Some((_pwd_path, todo_file_path_str)) => {
+                    let raw_old_todo = with_pushed(&mut todo_dir, todo_file_path_str, |path| {
+                        read_to_string(path)
+                            .expect("read todo file")
+                            .into_boxed_str()
+                    });
+                    let mut lines: TinyVec<[(u64, &str); 30]> = TinyVec::new();
+                    let mut cancel = false;
+                    for line in raw_old_todo.lines() {
+                        if let Some((id, rest)) =
+                            line.split_once(COL_SEP_CH).and_then(|(id_text, rest)| {
+                                id_text.parse::<u64>().ok().map(|id| (id, rest))
+                            })
+                        {
+                            if id != id_to_delete {
+                                lines.push((id, rest));
+                            } else {
+                                let (text, status) =
+                                    rest.split_once(COL_SEP_CH).unwrap_or_default();
+                                if status == ACTIVE_TODO {
+                                    if prompt_delete_active() {
+                                        println!("deleting \"{text}\" at ID: {id}...");
+                                    } else {
+                                        println!("canceling...");
+                                        cancel = true;
+                                        break;
+                                    }
+                                } else {
+                                    println!("deleting \"{text}\" at ID: {id}...");
+                                }
+                            }
+                        }
+                    }
+                    if !cancel {
+                        let renumbered_lines =
+                            lines.iter_mut().scan(0u64, |new_id, (_old_id, rest)| {
+                                let out = (*new_id, rest);
+                                *new_id += 1u64;
+                                Some(out)
+                            });
+
+                        let mut out_buf = String::with_capacity(raw_old_todo.len());
+                        for line in renumbered_lines {
+                            writeln!(&mut out_buf, "{}{COL_SEP_CH}{}", line.0, line.1).unwrap()
+                        }
+
+                        let mut todo_file_handle =
+                            with_pushed(&mut todo_dir, todo_file_path_str, |path| {
+                                OpenOptions::new()
+                                    .read(true)
+                                    .write(true)
+                                    .truncate(true)
+                                    .create(false)
+                                    .open(path)
+                                    .expect("open todo file")
+                            });
+                        todo_file_handle
+                            .write_all(out_buf.as_bytes())
+                            .expect("write todo file");
+                    }
+                }
+                None => println!("No Todos @ PWD: \"{}\"", pwd),
+            }
+        }
         Command::Done(done_id) => {
             use std::fmt::Write as _;
             #[derive(Debug)]
@@ -321,7 +392,7 @@ fn main() {
 /// Directory mapped TODO
 struct Todo {
     #[argh(subcommand)]
-    cmd: Command,
+    cmd: Option<Command>,
 }
 
 #[derive(FromArgs, PartialEq, Debug)]
@@ -332,6 +403,12 @@ pub enum Command {
     Update(UpdateTodo),
     Delete(DeleteTodo),
     Done(Done), // active
+}
+
+impl Default for Command {
+    fn default() -> Self {
+        Self::List(ListTodo::default())
+    }
 }
 
 #[derive(FromArgs, PartialEq, Debug)]
@@ -378,6 +455,12 @@ struct ListTodo {
     all: bool,
 }
 
+impl Default for ListTodo {
+    fn default() -> Self {
+        Self { all: false }
+    }
+}
+
 #[derive(FromArgs, PartialEq, Debug)]
 /// Update a todo.
 #[argh(subcommand, name = "update")]
@@ -395,11 +478,8 @@ struct UpdateTodo {
 #[argh(subcommand, name = "delete")]
 struct DeleteTodo {
     #[argh(positional)]
-    /// path to todo
-    path: PathBuf,
-    #[argh(positional)]
     /// todo number
-    number: usize,
+    id: u64,
 }
 
 fn calculate_hash<T: Hash>(t: &T) -> u64 {
@@ -444,4 +524,19 @@ fn save_dir_map(todo_path: &mut PathBuf, dir_map_buf: &mut String) -> std::io::R
     })?;
     let old = with_pushed(todo_path, DIR_MAP_NAME, |path| Box::from(path));
     with_pushed(todo_path, DIR_MAP_NEW_NAME, |path| rename(path, &old))
+}
+
+fn prompt_delete_active() -> bool {
+    let ans = Confirm::new("This todo is active. Are you sure you want to delete it?")
+        .with_default(false)
+        .prompt();
+
+    match ans {
+        Ok(true) => true,
+        Ok(false) => false,
+        Err(_) => {
+            println!("Error with questionnaire, try again later");
+            false
+        }
+    }
 }
