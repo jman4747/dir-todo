@@ -80,11 +80,11 @@ fn main() {
     match todo.cmd {
         Command::New(text) => {
             let pwd_todo_map_entry = dir_map_entries.iter().find(|(k, _v)| **k == *pwd);
-            let new_idx = match pwd_todo_map_entry {
+            let new_id = match pwd_todo_map_entry {
                 Some((_path, index)) => {
                     // dir_map_entries.push((Some(pwd), Some(path_hash)));
                     // create file
-                    let (exists, mut todo_file_handle) =
+                    let (todo_file_existed, mut todo_file_handle) =
                         with_pushed(&mut todo_dir, index, |path| {
                             (
                                 path.is_file(),
@@ -107,27 +107,48 @@ fn main() {
                         .read_to_string(&mut todo_buf)
                         .expect("read todo file");
 
-                    let next_idx = if exists {
-                        todo_buf
-                            .lines()
-                            .map(|line| {
-                                line.split_once(COL_SEP_CH)
-                                    .map(|(idx, _rest)| idx.parse::<u64>().unwrap_or(0))
-                                    .unwrap_or(0)
-                            })
-                            .max()
-                            .map(|max| max + 1)
-                            .unwrap_or(0)
+                    let next_id: Option<u64> = if todo_file_existed {
+                        let mut next_id = 0;
+                        let mut same = None::<u64>;
+                        for line in todo_buf.lines() {
+                            let mut columns = line.split(COL_SEP_CH);
+                            let old_id = columns
+                                .next()
+                                .and_then(|old_id_str| old_id_str.parse::<u64>().ok())
+                                .unwrap_or(0);
+                            if old_id >= next_id {
+                                next_id = old_id + 1
+                            }
+                            let old_text = columns.next();
+                            if let Some(old) = old_text {
+                                if let None = same {
+                                    if old == &text.text {
+                                        same = Some(old_id)
+                                    }
+                                }
+                            }
+                        }
+                        match same {
+                            Some(old_id) => {
+                                println!(
+                                    "the todo: \"{}\" already exists at id: {old_id}",
+                                    text.text
+                                );
+                                None
+                            }
+                            None => Some(next_id),
+                        }
                     } else {
-                        0
+                        Some(0)
                     };
 
-                    text.io_write_as_active(&mut todo_file_handle, next_idx)
-                        .expect("write new todo to file");
+                    if let Some(id) = next_id {
+                        text.io_write_as_active(&mut todo_file_handle, id)
+                            .expect("write new todo to file");
+                    }
 
-                    next_idx
+                    next_id
                 }
-
                 _ => {
                     let mut out_buf = String::with_capacity(20 + 4);
                     use std::fmt::Write as _;
@@ -150,10 +171,12 @@ fn main() {
                     write!(&mut dir_map_buf, "{pwd}\t{}\n", out_buf).unwrap();
                     save_dir_map(&mut todo_dir, &mut dir_map_buf)
                         .expect("write new entry to dir map");
-                    0
+                    Some(0)
                 }
             };
-            println!("added todo: \"{}\" at ID: {new_idx}", &text.text);
+            if let Some(new_id) = new_id {
+                println!("added todo: \"{}\" at ID: {new_id}", &text.text);
+            }
         }
         Command::List(all) if all.all => {
             let mut print_buf = String::with_capacity(10_240);
