@@ -2,10 +2,9 @@
 use std::{
     env::{current_dir, home_dir},
     ffi::OsStr,
-    fmt::Display,
     fs::{OpenOptions, create_dir, read_to_string, rename},
     hash::{DefaultHasher, Hash, Hasher},
-    io::{Read, Write},
+    io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
 };
 
@@ -257,7 +256,9 @@ fn main() {
                 None => println!("No Todos @ PWD: \"{}\"", pwd),
             }
         }
-        Command::Update(update_todo) => todo!(),
+        Command::Update(update) => {
+            update_todo(update, dir_map_entries.as_slice(), &pwd, &mut todo_dir);
+        }
         Command::Delete(delete_todo) => {
             use std::fmt::Write as _;
             let id_to_delete = delete_todo.id;
@@ -397,7 +398,7 @@ struct Todo {
 
 #[derive(FromArgs, PartialEq, Debug)]
 #[argh(subcommand)]
-pub enum Command {
+enum Command {
     New(NewTodo),
     List(ListTodo),
     Update(UpdateTodo),
@@ -420,15 +421,11 @@ struct NewTodo {
 }
 
 impl NewTodo {
-    pub fn active_record_buff_size(&self) -> usize {
+    fn active_record_buff_size(&self) -> usize {
         self.text.len() + 2 + 1 + ACTIVE_TODO.len() + 2
     }
 
-    pub fn io_write_as_active(
-        &self,
-        buf: &mut impl std::io::Write,
-        id: u64,
-    ) -> std::io::Result<()> {
+    fn io_write_as_active(&self, buf: &mut impl std::io::Write, id: u64) -> std::io::Result<()> {
         writeln!(
             buf,
             "{id}{COL_SEP_CH}{}{COL_SEP_CH}{ACTIVE_TODO}",
@@ -466,11 +463,11 @@ impl Default for ListTodo {
 #[argh(subcommand, name = "update")]
 struct UpdateTodo {
     #[argh(positional)]
-    /// path index todo
-    path_index: PathBuf,
+    /// todo ID number
+    id: u64,
     #[argh(positional)]
-    /// todo number
-    number: usize,
+    /// new text of todo
+    new_text: String,
 }
 
 #[derive(FromArgs, PartialEq, Debug)]
@@ -539,4 +536,98 @@ fn prompt_delete_active() -> bool {
             false
         }
     }
+}
+
+fn update_todo(
+    update: UpdateTodo,
+    dir_map_entries: &[(&str, &str)],
+    pwd: &str,
+    todo_dir: &mut PathBuf,
+) {
+    use std::fmt::Write;
+    let pwd_todo_map_entry = dir_map_entries.iter().find(|(k, _v)| **k == *pwd);
+    match pwd_todo_map_entry {
+        Some((_path, index)) => {
+            // file must already exist
+            let todo_file_handle = with_pushed(todo_dir, index, |path| {
+                if !path.is_file() {
+                    eprintln!("there are no todos to edit @: {path:?}");
+                    return None;
+                }
+                Some(
+                    OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .create(true)
+                        .append(false)
+                        .truncate(false)
+                        .open(path)
+                        .expect("open todo"),
+                )
+            });
+            let mut todo_file_handle = match todo_file_handle {
+                Some(tfh) => tfh,
+                None => return,
+            };
+            let todo_file_len = todo_file_handle
+                .metadata()
+                .map(|m| m.len() as usize)
+                .unwrap_or(4096);
+            let mut todo_buf = String::with_capacity(todo_file_len);
+            todo_file_handle
+                .read_to_string(&mut todo_buf)
+                .expect("read todo file");
+
+            // is there a todo at that ID?
+            let existing_record = todo_buf.lines().enumerate().find_map(|(idx, line)| {
+                line.split_once(COL_SEP_CH).and_then(|(id_str, rest)| {
+                    rest.split_once(COL_SEP_CH).and_then(|(_old_txt, status)| {
+                        if id_str.parse::<u64>().ok().is_some_and(|id| id == update.id) {
+                            Some((idx, id_str, status))
+                        } else {
+                            None
+                        }
+                    })
+                })
+            });
+            let existing_record = match existing_record {
+                Some(er) => er,
+                None => {
+                    eprintln!("no record @ ID {} and path \"{}\"", update.id, pwd);
+                    return;
+                }
+            };
+
+            let mut out_buf = String::with_capacity(todo_file_len + update.new_text.len());
+            todo_file_handle
+                .seek(SeekFrom::Start(0))
+                .expect("set write position to star of todo file");
+
+            // re-write todos with the update
+            for (og_idx, og_line) in todo_buf.lines().enumerate() {
+                if og_idx == existing_record.0 {
+                    writeln!(
+                        &mut out_buf,
+                        "{}{COL_SEP_CH}{}{COL_SEP_CH}{}",
+                        existing_record.1, update.new_text, existing_record.2
+                    )
+                    .unwrap()
+                } else {
+                    writeln!(&mut out_buf, "{og_line}").unwrap();
+                }
+            }
+            todo_file_handle
+                .set_len(out_buf.len() as u64)
+                .expect("set length of todo file to output buffer");
+            todo_file_handle
+                .write_all(out_buf.as_bytes())
+                .expect("write update to todo file");
+            todo_file_handle.flush().expect("flush todo file");
+            todo_file_handle.sync_all().expect("sync todo file");
+        }
+        _ => {
+            eprintln!("there are no todos to edit @: \"{pwd}\"");
+        }
+    };
+    println!("updated todo: \"{}\" @ ID: {}", &update.new_text, update.id);
 }
