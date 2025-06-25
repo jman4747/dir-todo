@@ -155,7 +155,45 @@ fn main() {
             };
             println!("added todo: \"{}\" at ID: {new_idx}", &text.text);
         }
-        Command::List(all) if all.all => {}
+        Command::List(all) if all.all => {
+            let mut print_buf = String::with_capacity(10_240);
+            for (dir, file_name) in dir_map_entries {
+                let mut in_buf = String::with_capacity(10_240);
+                with_pushed(&mut todo_dir, file_name, |path| {
+                    use std::fmt::Write as _;
+                    writeln!(&mut print_buf, "\nTodo: \"{}\"", &dir).unwrap();
+                    if let Some(mut handle) = OpenOptions::new()
+                        .read(true)
+                        .write(false)
+                        .create(false)
+                        .open(path)
+                        .inspect_err(|e| eprintln!("can't open {:?} due to {e}", &path))
+                        .ok()
+                    {
+                        handle
+                            .read_to_string(&mut in_buf)
+                            .inspect_err(|e| eprintln!("can't read {:?} due to {e}", &path))
+                            .ok();
+                        let todo_records = in_buf.lines().filter_map(|line| {
+                            let mut columns = line.split(COL_SEP_CH);
+                            let id = columns.next();
+                            let text = columns.next();
+                            let done = columns.next();
+
+                            done.and_then(|done| id.zip(text).map(|(id, text)| (id, text, done)))
+                        });
+                        for record in todo_records {
+                            let id = record.0;
+                            let text = record.1;
+                            let done = record.2;
+                            writeln!(&mut print_buf, "{id} - {done}: {text}").unwrap()
+                        }
+                        in_buf.clear();
+                    }
+                })
+            }
+            println!("{print_buf}")
+        }
         Command::List(_all) => {
             // find for pwd
             let pwd_todo_path = dir_map_entries.iter().find(|(k, _v)| **k == *pwd);
