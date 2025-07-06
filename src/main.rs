@@ -83,8 +83,11 @@ fn main() {
         Command::Delete(delete_todo_id) => {
             delete_todo(delete_todo_id, &mut dir_map_buf, &pwd, &mut todo_dir);
         }
-        Command::Done(done_id) => {
-            mark_done(done_id, &mut dir_map_buf, &pwd, &mut todo_dir);
+        Command::Done(done) => {
+            mark_done(done, &mut dir_map_buf, &pwd, &mut todo_dir);
+        }
+        Command::Active(active) => {
+            mark_active(active, &mut dir_map_buf, &pwd, &mut todo_dir);
         }
     }
 }
@@ -104,6 +107,7 @@ enum Command {
     Update(UpdateTodo),
     Delete(DeleteTodoId),
     Done(Done),
+    Active(Active),
 }
 
 impl Default for Command {
@@ -140,6 +144,15 @@ impl NewTodo {
 struct Done {
     #[argh(positional)]
     /// index of the todo (in this directory) to mark as done
+    index: u64,
+}
+
+#[derive(FromArgs, PartialEq, Debug)]
+/// Mark a todo active (not done).
+#[argh(subcommand, name = "active")]
+struct Active {
+    #[argh(positional)]
+    /// index of the todo (in this directory) to mark as active
     index: u64,
 }
 
@@ -500,14 +513,37 @@ fn list_todos_all(dir_map_buf: &mut String, todo_dir: &mut PathBuf) {
     println!("{print_buf}")
 }
 
-fn mark_done(done_id: Done, dir_map_buf: &mut String, pwd: &str, todo_dir: &mut PathBuf) {
+fn mark_done(done: Done, dir_map_buf: &mut String, pwd: &str, todo_dir: &mut PathBuf) {
+    mark_status(MarkStatus::Done(done), dir_map_buf, pwd, todo_dir);
+}
+
+fn mark_active(active: Active, dir_map_buf: &mut String, pwd: &str, todo_dir: &mut PathBuf) {
+    mark_status(MarkStatus::Active(active), dir_map_buf, pwd, todo_dir);
+}
+
+#[derive(Debug)]
+enum MarkStatus {
+    Done(Done),
+    Active(Active),
+}
+
+impl From<&MarkStatus> for u64 {
+    fn from(value: &MarkStatus) -> Self {
+        match value {
+            MarkStatus::Done(done) => done.index,
+            MarkStatus::Active(active) => active.index,
+        }
+    }
+}
+
+fn mark_status(status: MarkStatus, dir_map_buf: &mut String, pwd: &str, todo_dir: &mut PathBuf) {
     use std::fmt::Write as _;
     #[derive(Debug)]
     enum Change<'line> {
         None(&'line str),
         Some((u64, &'line str)),
     }
-    let id_want = done_id.index;
+    let id_want: u64 = (&status).into();
     let pwd_todo_path = dir_map_entries(&dir_map_buf).find(|(k, _v)| **k == *pwd);
     match pwd_todo_path {
         Some((pwd_path, todo_file_path_str)) => {
@@ -535,10 +571,16 @@ fn mark_done(done_id: Done, dir_map_buf: &mut String, pwd: &str, todo_dir: &mut 
             for record in todo_records {
                 match record {
                     Change::None(line) => writeln!(&mut new_todo_raw, "{line}").unwrap(),
-                    Change::Some((id, text)) => {
-                        println!("Seting: \"{text}\" @: \"{pwd_path}\" to done...");
-                        writeln!(&mut new_todo_raw, "{id}\t{text}\t{DONE_TODO}").unwrap()
-                    }
+                    Change::Some((id, text)) => match &status {
+                        MarkStatus::Done(_done) => {
+                            println!("Seting: \"{text}\" @: \"{pwd_path}\" to done...");
+                            writeln!(&mut new_todo_raw, "{id}\t{text}\t{DONE_TODO}").unwrap()
+                        }
+                        MarkStatus::Active(_active) => {
+                            println!("Seting: \"{text}\" @: \"{pwd_path}\" to active...");
+                            writeln!(&mut new_todo_raw, "{id}\t{text}\t{ACTIVE_TODO}").unwrap()
+                        }
+                    },
                 }
             }
             let mut todo_file_handle = with_pushed(todo_dir, todo_file_path_str, |path| {
