@@ -44,7 +44,6 @@ fn main() {
     let mut dir_map_handle = with_pushed(&mut todo_dir, DIR_MAP_NAME, |path| {
         OpenOptions::new()
             .read(true)
-            .write(true)
             .append(true)
             .create(true)
             .open(path)
@@ -71,22 +70,22 @@ fn main() {
         }
         Command::List(all) => {
             if all.all {
-                list_todos_all(&mut dir_map_buf, &mut todo_dir);
+                list_todos_all(dir_map_buf.as_str(), &mut todo_dir);
             } else {
-                list_todos_pwd(&mut dir_map_buf, &pwd, &mut todo_dir);
+                list_todos_pwd(dir_map_buf.as_str(), &pwd, &mut todo_dir);
             }
         }
         Command::Update(update) => {
             update_todo(update, &mut dir_map_buf, &pwd, &mut todo_dir);
         }
         Command::Delete(delete_todo_id) => {
-            delete_todo(delete_todo_id, &mut dir_map_buf, &pwd, &mut todo_dir);
+            delete_todo(delete_todo_id, dir_map_buf.as_str(), &pwd, &mut todo_dir);
         }
         Command::Done(done) => {
-            mark_done(done, &mut dir_map_buf, &pwd, &mut todo_dir);
+            mark_done(done, dir_map_buf.as_str(), &pwd, &mut todo_dir);
         }
         Command::Active(active) => {
-            mark_active(active, &mut dir_map_buf, &pwd, &mut todo_dir);
+            mark_active(active, dir_map_buf.as_str(), &pwd, &mut todo_dir);
         }
     }
 }
@@ -158,16 +157,11 @@ struct Active {
 #[derive(FromArgs, PartialEq, Debug)]
 /// List todos.
 #[argh(subcommand, name = "list")]
+#[derive(Default)]
 struct ListTodo {
     #[argh(switch, short = 'a')]
     /// list all Todos regardless of directory
     all: bool,
-}
-
-impl Default for ListTodo {
-    fn default() -> Self {
-        Self { all: false }
-    }
 }
 
 #[derive(FromArgs, PartialEq, Debug)]
@@ -225,7 +219,6 @@ fn save_dir_map(todo_path: &mut PathBuf, dir_map_buf: &mut String) -> std::io::R
     with_pushed(todo_path, DIR_MAP_NEW_NAME, |path| {
         let mut handle = OpenOptions::new()
             .read(true)
-            .write(true)
             .append(true)
             .create(true)
             .open(path)?;
@@ -280,7 +273,6 @@ fn create_new_todo(new_todo: NewTodo, pwd: &str, todo_dir: &mut PathBuf, dir_map
                     path.is_file(),
                     OpenOptions::new()
                         .read(true)
-                        .write(true)
                         .create(true)
                         .append(true)
                         .open(path)
@@ -311,10 +303,8 @@ fn create_new_todo(new_todo: NewTodo, pwd: &str, todo_dir: &mut PathBuf, dir_map
                     }
                     let old_text = columns.next();
                     if let Some(old) = old_text {
-                        if let None = same {
-                            if old == &new_todo.text {
-                                same = Some(old_id)
-                            }
+                        if same.is_none() && old == new_todo.text {
+                            same = Some(old_id)
                         }
                     }
                 }
@@ -349,7 +339,6 @@ fn create_new_todo(new_todo: NewTodo, pwd: &str, todo_dir: &mut PathBuf, dir_map
             let mut todo_file_handle = with_pushed(todo_dir, &out_buf, |path| {
                 OpenOptions::new()
                     .read(true)
-                    .write(true)
                     .create(true)
                     .append(true)
                     .open(path)
@@ -360,7 +349,7 @@ fn create_new_todo(new_todo: NewTodo, pwd: &str, todo_dir: &mut PathBuf, dir_map
                 .io_write_as_active(&mut todo_file_handle, 0)
                 .expect("write new todo to file");
 
-            write!(dir_map_buf, "{pwd}\t{}\n", out_buf).unwrap();
+            writeln!(dir_map_buf, "{pwd}\t{out_buf}").unwrap();
             save_dir_map(todo_dir, dir_map_buf).expect("write new entry to dir map");
             Some(0)
         }
@@ -378,7 +367,7 @@ fn update_todo(update: UpdateTodo, dir_map_buf: &mut String, pwd: &str, todo_dir
         return;
     }
 
-    let pwd_todo_map_entry = dir_map_entries(&dir_map_buf).find(|(k, _v)| **k == *pwd);
+    let pwd_todo_map_entry = dir_map_entries(dir_map_buf).find(|(k, _v)| **k == *pwd);
     match pwd_todo_map_entry {
         Some((_path, index)) => {
             // file must already exist
@@ -472,9 +461,9 @@ fn update_todo(update: UpdateTodo, dir_map_buf: &mut String, pwd: &str, todo_dir
     println!("updated todo: \"{}\" @ ID: {}", &update.new_text, update.id);
 }
 
-fn list_todos_pwd(dir_map_buf: &mut String, pwd: &str, todo_dir: &mut PathBuf) {
+fn list_todos_pwd(dir_map_buf: &str, pwd: &str, todo_dir: &mut PathBuf) {
     // find for pwd
-    let pwd_todo_path = dir_map_entries(&dir_map_buf).find(|(k, _v)| **k == *pwd);
+    let pwd_todo_path = dir_map_entries(dir_map_buf).find(|(k, _v)| **k == *pwd);
     match pwd_todo_path {
         Some((pwd_path, todo_file_path_str)) => {
             use std::fmt::Write as _;
@@ -487,31 +476,30 @@ fn list_todos_pwd(dir_map_buf: &mut String, pwd: &str, todo_dir: &mut PathBuf) {
                     .unwrap_or(4096),
             );
             let todo_raw = with_pushed(todo_dir, todo_file_path, |path| {
-                writeln!(&mut print_buf, "\nTodo: \"{}\"", pwd_path).unwrap();
+                writeln!(&mut print_buf, "\nTodo: \"{pwd_path}\"").unwrap();
                 read_to_string(path).expect("load todo file")
             });
             write_todos_in_file(&mut print_buf, &todo_raw);
             println!("{print_buf}")
         }
-        None => println!("No Todos @ PWD: \"{}\"", pwd),
+        None => println!("No Todos @ PWD: \"{pwd}\""),
     }
 }
 
-fn list_todos_all(dir_map_buf: &mut String, todo_dir: &mut PathBuf) {
+fn list_todos_all(dir_map: &str, todo_dir: &mut PathBuf) {
     use std::fmt::Write as _;
-    let dir_map_entries = dir_map_entries(&dir_map_buf);
+    let dir_map_entries = dir_map_entries(dir_map);
     let mut print_buf = String::with_capacity(10_240);
     let mut in_buf = String::with_capacity(10_240);
     for (dir, file_name) in dir_map_entries {
         with_pushed(todo_dir, file_name, |path| {
             writeln!(&mut print_buf, "\nTodo: \"{}\"", &dir).unwrap();
-            if let Some(mut handle) = OpenOptions::new()
+            if let Ok(mut handle) = OpenOptions::new()
                 .read(true)
                 .write(false)
                 .create(false)
                 .open(path)
                 .inspect_err(|e| eprintln!("can't open {:?} due to {e}", &path))
-                .ok()
             {
                 handle
                     .read_to_string(&mut in_buf)
@@ -525,12 +513,12 @@ fn list_todos_all(dir_map_buf: &mut String, todo_dir: &mut PathBuf) {
     println!("{print_buf}")
 }
 
-fn mark_done(done: Done, dir_map_buf: &mut String, pwd: &str, todo_dir: &mut PathBuf) {
-    mark_status(MarkStatus::Done(done), dir_map_buf, pwd, todo_dir);
+fn mark_done(done: Done, dir_map: &str, pwd: &str, todo_dir: &mut PathBuf) {
+    mark_status(MarkStatus::Done(done), dir_map, pwd, todo_dir);
 }
 
-fn mark_active(active: Active, dir_map_buf: &mut String, pwd: &str, todo_dir: &mut PathBuf) {
-    mark_status(MarkStatus::Active(active), dir_map_buf, pwd, todo_dir);
+fn mark_active(active: Active, dir_map: &str, pwd: &str, todo_dir: &mut PathBuf) {
+    mark_status(MarkStatus::Active(active), dir_map, pwd, todo_dir);
 }
 
 #[derive(Debug)]
@@ -548,7 +536,7 @@ impl From<&MarkStatus> for u64 {
     }
 }
 
-fn mark_status(status: MarkStatus, dir_map_buf: &mut String, pwd: &str, todo_dir: &mut PathBuf) {
+fn mark_status(status: MarkStatus, dir_map: &str, pwd: &str, todo_dir: &mut PathBuf) {
     use std::fmt::Write as _;
     #[derive(Debug)]
     enum Change<'line> {
@@ -556,7 +544,7 @@ fn mark_status(status: MarkStatus, dir_map_buf: &mut String, pwd: &str, todo_dir
         Some((u64, &'line str)),
     }
     let id_want: u64 = (&status).into();
-    let pwd_todo_path = dir_map_entries(&dir_map_buf).find(|(k, _v)| **k == *pwd);
+    let pwd_todo_path = dir_map_entries(dir_map).find(|(k, _v)| **k == *pwd);
     match pwd_todo_path {
         Some((pwd_path, todo_file_path_str)) => {
             let todo_file_path: &Path = todo_file_path_str.as_ref();
@@ -608,19 +596,14 @@ fn mark_status(status: MarkStatus, dir_map_buf: &mut String, pwd: &str, todo_dir
                 .write_all(new_todo_raw.as_bytes())
                 .expect("write todo file");
         }
-        None => println!("No Todos @ PWD: \"{}\"", pwd),
+        None => println!("No Todos @ PWD: \"{pwd}\""),
     }
 }
 
-fn delete_todo(
-    delete_todo_id: DeleteTodoId,
-    dir_map_buf: &mut String,
-    pwd: &str,
-    todo_dir: &mut PathBuf,
-) {
+fn delete_todo(delete_todo_id: DeleteTodoId, dir_map: &str, pwd: &str, todo_dir: &mut PathBuf) {
     use std::fmt::Write as _;
     let id_to_delete = delete_todo_id.id;
-    let pwd_todo_path = dir_map_entries(&dir_map_buf).find(|(k, _v)| **k == *pwd);
+    let pwd_todo_path = dir_map_entries(dir_map).find(|(k, _v)| **k == *pwd);
     match pwd_todo_path {
         Some((_pwd_path, todo_file_path_str)) => {
             let raw_old_todo = with_pushed(todo_dir, todo_file_path_str, |path| {
@@ -679,7 +662,7 @@ fn delete_todo(
                     .expect("write todo file");
             }
         }
-        None => println!("No Todos @ PWD: \"{}\"", pwd),
+        None => println!("No Todos @ PWD: \"{pwd}\""),
     }
 }
 
