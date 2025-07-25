@@ -1,7 +1,6 @@
 /// dir map is "path" => "hash of path"
 use std::{
     env::{current_dir, home_dir},
-    ffi::OsStr,
     fs::{OpenOptions, create_dir, read_to_string, rename},
     hash::{DefaultHasher, Hash, Hasher},
     io::{Read, Seek, SeekFrom, Write},
@@ -125,9 +124,9 @@ struct NewTodo {
 }
 
 impl NewTodo {
-    fn active_record_buff_size(&self) -> usize {
-        self.text.len() + 2 + 1 + ACTIVE_TODO.len() + 2
-    }
+    // fn active_record_buff_size(&self) -> usize {
+    //     self.text.len() + 2 + 1 + ACTIVE_TODO.len() + 2
+    // }
 
     fn io_write_as_active(&self, buf: &mut impl std::io::Write, id: u64) -> std::io::Result<()> {
         writeln!(
@@ -209,18 +208,18 @@ where
     out
 }
 
-fn with_pushed_and_ext<P, F, Out, E>(buf: &mut PathBuf, to_push: P, ext: E, mut f: F) -> Out
-where
-    P: AsRef<Path>,
-    F: FnMut(&Path) -> Out,
-    E: AsRef<OsStr>,
-{
-    buf.push(to_push);
-    buf.set_extension(ext);
-    let out = f(buf.as_path());
-    buf.pop();
-    out
-}
+// fn with_pushed_and_ext<P, F, Out, E>(buf: &mut PathBuf, to_push: P, ext: E, mut f: F) -> Out
+// where
+//     P: AsRef<Path>,
+//     F: FnMut(&Path) -> Out,
+//     E: AsRef<OsStr>,
+// {
+//     buf.push(to_push);
+//     buf.set_extension(ext);
+//     let out = f(buf.as_path());
+//     buf.pop();
+//     out
+// }
 
 fn save_dir_map(todo_path: &mut PathBuf, dir_map_buf: &mut String) -> std::io::Result<()> {
     with_pushed(todo_path, DIR_MAP_NEW_NAME, |path| {
@@ -252,6 +251,13 @@ fn prompt_delete_active() -> bool {
 }
 
 fn create_new_todo(new_todo: NewTodo, pwd: &str, todo_dir: &mut PathBuf, dir_map_buf: &mut String) {
+    // reject todo with newlines or tabs
+
+    let text = new_todo.text.as_str();
+    if reject_nl_and_tab(text) {
+        return;
+    }
+
     let dir_map_entries: Vec<(&str, &str)> = dir_map_buf
         .lines()
         .map(|line| {
@@ -366,6 +372,12 @@ fn create_new_todo(new_todo: NewTodo, pwd: &str, todo_dir: &mut PathBuf, dir_map
 
 fn update_todo(update: UpdateTodo, dir_map_buf: &mut String, pwd: &str, todo_dir: &mut PathBuf) {
     use std::fmt::Write;
+
+    let text = update.new_text.as_str();
+    if reject_nl_and_tab(text) {
+        return;
+    }
+
     let pwd_todo_map_entry = dir_map_entries(&dir_map_buf).find(|(k, _v)| **k == *pwd);
     match pwd_todo_map_entry {
         Some((_path, index)) => {
@@ -699,4 +711,24 @@ fn dir_map_entries(dir_map_buf: &str) -> impl Iterator<Item = (&str, &str)> {
             cols.next().expect("read todo file name"),
         )
     })
+}
+
+/// Returns true if a newline or tab is found in text
+fn reject_nl_and_tab(text: &str) -> bool {
+    let tab = text.contains('\t');
+    let nl = text.contains('\n');
+
+    if tab {
+        eprintln!("todo contains tab character");
+    }
+
+    if nl {
+        eprintln!("todo contains newline character");
+    }
+
+    if nl || tab {
+        eprintln!("can't create todo");
+    }
+
+    nl || tab
 }
